@@ -21,8 +21,7 @@
   vars:
     # Renew if the cert expires within this many days. Adjust as needed.
     tls_min_days_remaining: 30
-    tls_skip_chain_check: "{{  true if form_skip_chain_check == 'true' else false }}"
-    form_skip_chain_check: false
+    tls_skip_chain_check: false
   tasks:
 
     - name: "Fetch the live certificate presented on :443"
@@ -102,7 +101,8 @@
   # Skip hosts that passed play 1. The whole play becomes a no-op for them,
   # which is the idempotency you asked for.
   vars:
-    acme_directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
+    # acme_directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
+    acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
     acme_version: 2
     acme_email: "hugonz@gmail.com"
 
