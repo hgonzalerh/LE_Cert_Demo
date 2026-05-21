@@ -40,6 +40,15 @@
       # `failed_when: false` lets us treat "no cert at all" as a compliance
       # failure rather than a play-stopping error.
 
+    - name: "Parse the certificate for structured fields"
+      community.crypto.x509_certificate_info:
+        content: "{{ live_cert.cert }}"
+      register: cert_info
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      when: live_cert is success and live_cert.cert is defined
+
     - name: "Validate the certificate chain against the public trust store"
       ansible.builtin.command:
         # `openssl s_client` exits 0 only if the full chain validates against
@@ -74,9 +83,14 @@
     # of doing arithmetic on timedelta objects.
     # -----------------------------------------------------------------
 
-    - name: "Fact: did we successfully fetch a live certificate?"
+    - name: "Fact: did we successfully fetch and parse a live certificate?"
       ansible.builtin.set_fact:
-        cert_was_fetched: "{{ live_cert is success and live_cert.not_after is defined }}"
+        cert_was_fetched: >-
+          {{
+            live_cert is success
+            and cert_info is success
+            and cert_info.not_after is defined
+          }}
 
     - name: "Fact: seconds remaining until cert expires (epoch math)"
       # not_after from community.crypto is ISO-8601 with timezone, e.g.
@@ -85,7 +99,7 @@
       ansible.builtin.set_fact:
         cert_seconds_remaining: >-
           {{
-            ((live_cert.not_after | to_datetime('%Y%m%d%H%M%SZ')).strftime('%s') | int)
+            ((cert_info.not_after | to_datetime('%Y%m%d%H%M%SZ')).strftime('%s') | int)
             - (now(utc=true).strftime('%s') | int)
           }}
       when: cert_was_fetched | bool
@@ -111,9 +125,9 @@
           {{
             cert_was_fetched | bool
             and (
-              inventory_hostname in (live_cert.subject_alt_name | default([])
+              inventory_hostname in (cert_info.subject_alt_name | default([])
                 | map('regex_replace', '^DNS:', '') | list)
-              or inventory_hostname == (live_cert.subject.commonName | default(''))
+              or inventory_hostname == (cert_info.subject.commonName | default(''))
             )
           }}
 
