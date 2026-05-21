@@ -1,0 +1,9 @@
+[webservers]
+web03.hugonz.lat
+web02.hugonz.lat
+
+[monitoring]
+mon.hugonz.lat
+
+[all:vars]
+ansible_user= cloud-user
