@@ -1,0 +1,18 @@
+---
+- name: Apache server installed
+  hosts: webservers
+  become: true
+  tasks:
+    - name: latest Apache version installed
+      ansible.builtin.yum:
+        name: httpd
+        state: present
+    - name: Apache enabled and running
+      ansible.builtin.service:
+        name: httpd
+        enabled: true
+        state: started
+    - name: Copy web.html
+      ansible.builtin.template:
+        src: web.html.j2
+        dest: /var/www/html/index.html
