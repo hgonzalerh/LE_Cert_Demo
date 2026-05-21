@@ -1,0 +1,335 @@
+---
+# tls_renew.yml
+#
+# Play 1: Check each inventory host's live TLS endpoint. Mark any host whose
+#         certificate is missing, expired, expiring soon, or whose chain does
+#         not validate against the public trust store as non-compliant.
+#
+# Play 2: For non-compliant hosts only, obtain a new cert from Let's Encrypt's
+#         staging endpoint via HTTP-01 and install it into the Apache server.
+#
+# Assumptions:
+#   - Inventory hostnames ARE the FQDNs the cert must cover.
+#   - Apache serves the site on :443 and can serve files from
+#     {{ acme_http_challenge_docroot }}/.well-known/acme-challenge/ on :80.
+#   - SSH + become to root are available.
+#   - community.crypto is installed on the control node.
+
+- name: "Play 1 — Audit TLS certificates on every host"
+  hosts: webservers
+  gather_facts: false
+  vars:
+    # Renew if the cert expires within this many days. Adjust as needed.
+    tls_min_days_remaining: 30
+    tls_skip_chain_check: false
+  tasks:
+
+    - name: "Fetch the live certificate presented on :443"
+      community.crypto.get_certificate:
+        host: "{{ inventory_hostname }}"
+        port: 443
+        # We don't validate the chain here; we just want the leaf so we can
+        # inspect its fields. Chain validation happens in a separate task.
+        asn1_base64: true
+      register: live_cert
+      delegate_to: localhost
+      become: false
+      failed_when: false
+      # `failed_when: false` lets us treat "no cert at all" as a compliance
+      # failure rather than a play-stopping error.
+
+    - name: "Validate the certificate chain against the public trust store"
+      ansible.builtin.command:
+        # `openssl s_client` exits 0 only if the full chain validates against
+        # the system CA bundle. -verify_return_error makes verify failures
+        # actually fail the command instead of being only advisory.
+        cmd: >-
+          openssl s_client
+          -connect {{ inventory_hostname }}:443
+          -servername {{ inventory_hostname }}
+          -verify_return_error
+          -verify 5
+          -brief
+        stdin: ""
+      register: chain_check
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      when: not tls_skip_chain_check | bool
+
+    - name: "Compute compliance verdict"
+      ansible.builtin.set_fact:
+        tls_compliant: >-
+          {{
+            live_cert is success
+            and live_cert.not_after is defined
+            and ((live_cert.not_after | to_datetime('%Y%m%d%H%M%SZ'))
+                - (ansible_date_time.iso8601 | default(lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ')) | to_datetime('%Y-%m-%dT%H:%M:%SZ'))
+                ).days >= tls_min_days_remaining
+            and (
+              inventory_hostname in (live_cert.subject_alt_name | default([])
+                | map('regex_replace','^DNS:','') | list)
+              or inventory_hostname == (live_cert.subject.commonName | default(''))
+            )
+            and (tls_skip_chain_check | bool or chain_check.rc == 0)
+          }}
+        tls_reason: >-
+          {{
+            'no cert / fetch failed' if live_cert is not success or live_cert.not_after is not defined
+            else 'expired or expiring within ' ~ tls_min_days_remaining ~ ' days'
+              if ((live_cert.not_after | to_datetime('%Y%m%d%H%M%SZ'))
+                  - (lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ') | to_datetime('%Y-%m-%dT%H:%M:%SZ'))
+                ).days < tls_min_days_remaining
+            else 'FQDN not in CN/SAN'
+              if inventory_hostname not in (live_cert.subject_alt_name | default([])
+                  | map('regex_replace','^DNS:','') | list)
+                and inventory_hostname != (live_cert.subject.commonName | default(''))
+            else 'chain does not validate against public roots'
+              if not (tls_skip_chain_check | bool) and chain_check.rc != 0
+            else 'compliant'
+          }}
+
+    - name: "Report verdict"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ 'OK' if tls_compliant else 'NEEDS RENEWAL — ' ~ tls_reason }}"
+
+
+- name: "Play 2 — Renew certificates for non-compliant hosts via ACME (LE staging)"
+  hosts: webservers
+  gather_facts: true
+  # Skip hosts that passed play 1. The whole play becomes a no-op for them,
+  # which is the idempotency you asked for.
+  vars:
+    acme_directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
+    # acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+    acme_version: 2
+    acme_email: "hugonz@gmail.com"
+
+    # Paths on the control node where keys/CSRs/certs are kept per host.
+    # Keeping these on the controller means re-runs reuse the same account
+    # and domain keys, which is what ACME expects.
+    acme_local_dir: "{{ playbook_dir }}/acme/{{ inventory_hostname }}"
+    acme_account_key: "{{ playbook_dir }}/acme/account.key"
+
+    # Paths on the managed node where Apache will read the cert material.
+    # Using RHEL conventions: /etc/pki/tls/{certs,private} are pre-created by
+    # the ca-certificates / mod_ssl packages with correct SELinux labels
+    # (cert_t), so we don't need to create directories or relabel.
+    apache_cert_dir: "/etc/pki/tls/certs"
+    apache_key_dir: "/etc/pki/tls/private"
+    apache_cert_file: "{{ apache_cert_dir }}/{{ inventory_hostname }}.fullchain.pem"
+    apache_key_file: "{{ apache_key_dir }}/{{ inventory_hostname }}.key"
+    apache_chain_file: "{{ apache_cert_dir }}/{{ inventory_hostname }}.chain.pem"
+
+    # Where Apache serves http-01 challenges from. Must match an Alias or
+    # DocumentRoot reachable at http://<fqdn>/.well-known/acme-challenge/
+    acme_http_challenge_docroot: "/var/www/html"
+
+  tasks:
+
+    - name: "Skip compliant hosts"
+      ansible.builtin.meta: end_host
+      when: tls_compliant | bool
+
+    # -----------------------------------------------------------------
+    # Local setup on the control node: account key + per-host key/CSR
+    # -----------------------------------------------------------------
+
+    - name: "Ensure local ACME working directory exists"
+      ansible.builtin.file:
+        path: "{{ acme_local_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+      run_once: false
+
+    - name: "Generate an ACME account key (once, shared across hosts)"
+      community.crypto.openssl_privatekey:
+        path: "{{ acme_account_key }}"
+        type: RSA
+        size: 4096
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: "Generate a per-host domain private key"
+      community.crypto.openssl_privatekey:
+        path: "{{ acme_local_dir }}/privkey.pem"
+        type: RSA
+        size: 2048
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+
+    - name: "Generate a CSR for this FQDN"
+      community.crypto.openssl_csr:
+        path: "{{ acme_local_dir }}/cert.csr"
+        privatekey_path: "{{ acme_local_dir }}/privkey.pem"
+        common_name: "{{ inventory_hostname }}"
+        subject_alt_name:
+          - "DNS:{{ inventory_hostname }}"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    # -----------------------------------------------------------------
+    # ACME step 1: create the order, get challenge data back
+    #
+    # Note: if LE already has a valid authorization cached for this FQDN
+    # (from a recent successful challenge), this call returns changed=false
+    # and challenge_data is empty — there's nothing for us to publish.
+    # The subsequent publish/cleanup tasks guard against that case.
+    # -----------------------------------------------------------------
+
+    - name: "ACME — request a new order and get the http-01 challenge"
+      community.crypto.acme_certificate:
+        account_key_src: "{{ acme_account_key }}"
+        account_email: "{{ acme_email }}"
+        acme_directory: "{{ acme_directory }}"
+        acme_version: "{{ acme_version }}"
+        terms_agreed: true
+        challenge: http-01
+        profile: shortlived
+        csr: "{{ acme_local_dir }}/cert.csr"
+        dest: "{{ acme_local_dir }}/cert.pem"
+        fullchain_dest: "{{ acme_local_dir }}/fullchain.pem"
+        chain_dest: "{{ acme_local_dir }}/chain.pem"
+        # The staging directory issues from "Fake LE" — fine for testing.
+      register: acme_challenge
+      delegate_to: localhost
+      become: false
+
+    # -----------------------------------------------------------------
+    # Publish the challenge file on the managed node so LE can fetch it
+    #
+    # All three tasks (mkdir, drop file, cleanup) share the same triple
+    # guard: only run if the ACME call asked for a challenge AND
+    # challenge_data actually contains an entry for our FQDN. If LE used
+    # a cached authorization, challenge_data is an empty dict and these
+    # tasks would otherwise blow up with "dict object has no attribute".
+    # -----------------------------------------------------------------
+
+    - name: "Ensure the ACME challenge directory exists on the web server"
+      ansible.builtin.file:
+        path: "{{ acme_http_challenge_docroot }}/.well-known/acme-challenge"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+      when:
+        - acme_challenge is changed
+        - acme_challenge.challenge_data is defined
+        - inventory_hostname in (acme_challenge.challenge_data | default({}))
+
+    - name: "Drop the http-01 challenge response file"
+      ansible.builtin.copy:
+        # acme_challenge.challenge_data[fqdn]['http-01'] contains:
+        #   resource:           the path under /.well-known/acme-challenge/
+        #   resource_value:     the body the file must contain
+        dest: >-
+          {{ acme_http_challenge_docroot }}/{{
+            acme_challenge.challenge_data[inventory_hostname]['http-01'].resource
+          }}
+        content: "{{ acme_challenge.challenge_data[inventory_hostname]['http-01'].resource_value }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      when:
+        - acme_challenge is changed
+        - acme_challenge.challenge_data is defined
+        - inventory_hostname in (acme_challenge.challenge_data | default({}))
+
+    # -----------------------------------------------------------------
+    # ACME step 2: tell LE the challenge is in place, retrieve the cert
+    #
+    # This call is intentionally ungated. The module is idempotent on its
+    # own: if dest/fullchain_dest already exist and are fresh, it's a
+    # no-op. If LE used cached authz (so step 1 had nothing to publish),
+    # this call still needs to run to actually fetch the cert.
+    # -----------------------------------------------------------------
+
+    - name: "ACME — validate the challenge and retrieve the certificate"
+      community.crypto.acme_certificate:
+        account_key_src: "{{ acme_account_key }}"
+        account_email: "{{ acme_email }}"
+        acme_directory: "{{ acme_directory }}"
+        acme_version: "{{ acme_version }}"
+        terms_agreed: true
+        challenge: http-01
+        profile: shortlived
+        csr: "{{ acme_local_dir }}/cert.csr"
+        dest: "{{ acme_local_dir }}/cert.pem"
+        fullchain_dest: "{{ acme_local_dir }}/fullchain.pem"
+        chain_dest: "{{ acme_local_dir }}/chain.pem"
+        # This is what closes the loop: passing back the data from the
+        # first call signals "challenge published, please verify".
+        data: "{{ acme_challenge }}"
+      delegate_to: localhost
+      become: false
+
+    - name: "Clean up the challenge file"
+      ansible.builtin.file:
+        path: >-
+          {{ acme_http_challenge_docroot }}/{{
+            acme_challenge.challenge_data[inventory_hostname]['http-01'].resource
+          }}
+        state: absent
+      become: true
+      when:
+        - acme_challenge is changed
+        - acme_challenge.challenge_data is defined
+        - inventory_hostname in (acme_challenge.challenge_data | default({}))
+
+    # -----------------------------------------------------------------
+    # Install the freshly issued material onto the Apache server
+    # -----------------------------------------------------------------
+    # No directory creation needed: /etc/pki/tls/certs and /etc/pki/tls/private
+    # are part of the base RHEL filesystem (provided by ca-certificates) and
+    # already carry the correct SELinux context (cert_t).
+    #
+    # These copy tasks are idempotent: if the source file on the controller
+    # is byte-identical to the destination, nothing changes and the handler
+    # doesn't fire. Safe to run on every pass.
+
+    - name: "Install the private key"
+      ansible.builtin.copy:
+        src: "{{ acme_local_dir }}/privkey.pem"
+        dest: "{{ apache_key_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+      notify: Reload Apache
+
+    - name: "Install the full chain (cert + intermediates)"
+      ansible.builtin.copy:
+        src: "{{ acme_local_dir }}/fullchain.pem"
+        dest: "{{ apache_cert_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify: Reload Apache
+
+    - name: "Install the intermediate chain on its own (for SSLCertificateChainFile if used)"
+      ansible.builtin.copy:
+        src: "{{ acme_local_dir }}/chain.pem"
+        dest: "{{ apache_chain_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+      notify: Reload Apache
+
+  handlers:
+    - name: Reload Apache
+      ansible.builtin.service:
+        # Use httpd on RHEL-family, apache2 on Debian-family.
+        name: "{{ 'httpd' if ansible_os_family == 'RedHat' else 'apache2' }}"
+        state: reloaded
+      become: true
