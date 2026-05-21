@@ -85,7 +85,7 @@
       ansible.builtin.set_fact:
         cert_seconds_remaining: >-
           {{
-            ((live_cert.not_after | to_datetime('%Y-%m-%dT%H:%M:%S%z')).strftime('%s') | int)
+            ((live_cert.not_after | to_datetime('%Y%m%d%H%M%SZ')).strftime('%s') | int)
             - (now(utc=true).strftime('%s') | int)
           }}
       when: cert_was_fetched | bool
