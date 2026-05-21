@@ -21,7 +21,8 @@
   vars:
     # Renew if the cert expires within this many days. Adjust as needed.
     tls_min_days_remaining: 30
-    tls_skip_chain_check: false
+    tls_skip_chain_check: "{{  true if form_skip_chain_check == 'true' else false }}"
+    form_skip_chain_check: false
   tasks:
 
     - name: "Fetch the live certificate presented on :443"
