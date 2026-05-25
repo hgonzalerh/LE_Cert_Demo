@@ -6,4 +6,4 @@ web02.hugonz.lat
 mon.hugonz.lat
 
 [all:vars]
-ansible_user= cloud-user
+ansible_user=cloud-user
