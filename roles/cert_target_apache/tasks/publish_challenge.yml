@@ -1,0 +1,24 @@
+---
+# cert_challenge comes from acme_cert. It is an empty dict when LE reused a
+# cached authorization, in which case there is nothing to publish.
+
+- name: "Publish the http-01 challenge"
+  when: cert_challenge | default({}) | length > 0
+  block:
+    - name: "Ensure the ACME challenge directory exists on the web server"
+      ansible.builtin.file:
+        path: "{{ acme_http_challenge_docroot }}/.well-known/acme-challenge"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      become: true
+
+    - name: "Drop the http-01 challenge response file"
+      ansible.builtin.copy:
+        dest: "{{ acme_http_challenge_docroot }}/{{ cert_challenge.resource }}"
+        content: "{{ cert_challenge.resource_value }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true

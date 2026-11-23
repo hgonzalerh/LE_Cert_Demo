@@ -1,0 +1,33 @@
+# Managed by Ansible — do not edit by hand.
+# Cert/key paths match the cert_target_apache install step so ACME
+# renewals are drop-in.
+
+<VirtualHost *:443>
+    ServerName {{ inventory_hostname }}
+    DocumentRoot {{ apache_docroot }}
+
+    ErrorLog logs/{{ inventory_hostname }}_ssl_error.log
+    CustomLog logs/{{ inventory_hostname }}_ssl_access.log combined
+
+    SSLEngine on
+    SSLCertificateFile    {{ apache_cert_file }}
+    SSLCertificateKeyFile {{ apache_key_file }}
+
+    # TLS 1.2 + 1.3 only (RHEL crypto policy may further restrict).
+    # No SSLCertificateChainFile — deprecated since Apache 2.4.8;
+    # SSLCertificateFile with a fullchain PEM is the modern form.
+    SSLProtocol           all -SSLv3 -TLSv1 -TLSv1.1
+    SSLHonorCipherOrder   on
+
+    # HSTS. Only meaningful once a trusted cert is in place; harmless
+    # while still on the self-signed cert.
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    <Directory "{{ apache_docroot }}">
+        Options FollowSymLinks
+        AllowOverride None
+        Require all granted
+    </Directory>
+
+    # ACME http-01 challenges are served over :80; nothing to do here.
+</VirtualHost>

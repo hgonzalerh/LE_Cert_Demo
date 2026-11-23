@@ -1,0 +1,37 @@
+---
+# acme_cert — step 2: tell LE the challenge is in place, retrieve the cert.
+#
+# Requires `acme_order` from tasks/main.yml.
+#
+# Output fact:
+#   cert_files (dict) — controller-side paths: key, cert, fullchain, chain.
+
+# Intentionally ungated: the module is idempotent on its own, and if LE used
+# a cached authorization (nothing to publish) it still has to run to fetch
+# the cert.
+- name: "ACME — validate the challenge and retrieve the certificate"
+  community.crypto.acme_certificate:
+    account_key_src: "{{ acme_account_key }}"
+    modify_account: false
+    acme_directory: "{{ acme_directory }}"
+    acme_version: "{{ acme_version }}"
+    terms_agreed: true
+    challenge: http-01
+    profile: "{{ acme_profile }}"
+    csr: "{{ acme_local_dir }}/cert.csr"
+    dest: "{{ acme_local_dir }}/cert.pem"
+    fullchain_dest: "{{ acme_local_dir }}/fullchain.pem"
+    chain_dest: "{{ acme_local_dir }}/chain.pem"
+    # Passing back the data from the first call signals
+    # "challenge published, please verify".
+    data: "{{ acme_order }}"
+  delegate_to: localhost
+  become: false
+
+- name: "Expose the issued material for the target role to install"
+  ansible.builtin.set_fact:
+    cert_files:
+      key: "{{ acme_local_dir }}/privkey.pem"
+      cert: "{{ acme_local_dir }}/cert.pem"
+      fullchain: "{{ acme_local_dir }}/fullchain.pem"
+      chain: "{{ acme_local_dir }}/chain.pem"

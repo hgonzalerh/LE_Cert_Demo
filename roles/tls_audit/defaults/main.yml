@@ -1,0 +1,7 @@
+---
+# Renew if the cert expires within this many days.
+tls_min_days_remaining: 30
+
+# Setting this to true allows for provisioning of staging certs and
+# internal certs when Ansible localhost does not have the private CA.
+tls_skip_chain_check: false

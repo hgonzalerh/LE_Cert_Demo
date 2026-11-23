@@ -1,0 +1,16 @@
+---
+- name: "Ensure Apache is enabled and started"
+  ansible.builtin.service:
+    name: "{{ apache_service_name }}"
+    state: started
+    enabled: true
+  become: true
+
+# `apachectl configtest` exits non-zero if anything is wrong. Catching it
+# here surfaces problems before the pending reload handler runs, rather
+# than leaving httpd up on the old config after a failed reload.
+- name: "Run config syntax check"
+  ansible.builtin.command:
+    cmd: apachectl configtest
+  become: true
+  changed_when: false

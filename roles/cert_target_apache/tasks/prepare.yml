@@ -1,0 +1,65 @@
+---
+- name: "Install Apache and mod_ssl"
+  ansible.builtin.dnf:
+    name:
+      - httpd
+      - mod_ssl
+    state: present
+  become: true
+
+# The mod_ssl RPM ships ssl.conf with a <VirtualHost _default_:443> block
+# pointing at /etc/pki/tls/certs/localhost.crt. Left alongside our per-FQDN
+# vhost, Apache warns about overlapping :443 vhosts and behavior depends on
+# load order. Strip it and leave ssl.conf as module-level SSL config only.
+- name: "Remove the default <VirtualHost _default_:443> block from ssl.conf"
+  ansible.builtin.replace:
+    path: /etc/httpd/conf.d/ssl.conf
+    regexp: '(?ms)^<VirtualHost\s+_default_:443>.*?^</VirtualHost>\s*$'
+    replace: '# Default vhost removed by Ansible — see {{ apache_vhost_file | basename }}'
+  become: true
+  notify: Reload Apache
+
+- name: "Deploy the per-FQDN TLS vhost"
+  ansible.builtin.template:
+    src: ssl-vhost.conf.j2
+    dest: "{{ apache_vhost_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Reload Apache
+
+- name: "Open https in firewalld"
+  ansible.posix.firewalld:
+    service: https
+    permanent: true
+    immediate: true
+    state: enabled
+  become: true
+  # Some minimal images don't ship firewalld; tolerate that.
+  failed_when: false
+
+- name: "Open http in firewalld (needed by ACME http-01)"
+  ansible.posix.firewalld:
+    service: http
+    permanent: true
+    immediate: true
+    state: enabled
+  become: true
+  failed_when: false
+
+- name: "Check whether a cert already exists on the managed node"
+  ansible.builtin.stat:
+    path: "{{ apache_cert_file }}"
+  register: apache_existing_cert
+  become: true
+
+- name: "Check whether a key already exists on the managed node"
+  ansible.builtin.stat:
+    path: "{{ apache_key_file }}"
+  register: apache_existing_key
+  become: true
+
+- name: "Report whether cert material is already in place"
+  ansible.builtin.set_fact:
+    cert_target_has_cert: "{{ apache_existing_cert.stat.exists and apache_existing_key.stat.exists }}"

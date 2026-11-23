@@ -1,0 +1,25 @@
+---
+# Paths on the managed node where Apache reads the cert material.
+# RHEL conventions: /etc/pki/tls/{certs,private} are pre-created by the
+# ca-certificates / mod_ssl packages with correct SELinux labels (cert_t),
+# so we don't need to create directories or relabel.
+apache_cert_dir: "/etc/pki/tls/certs"
+apache_key_dir: "/etc/pki/tls/private"
+apache_cert_file: "{{ apache_cert_dir }}/{{ inventory_hostname }}.fullchain.pem"
+apache_key_file: "{{ apache_key_dir }}/{{ inventory_hostname }}.key"
+apache_chain_file: "{{ apache_cert_dir }}/{{ inventory_hostname }}.chain.pem"
+
+# Per-FQDN vhost file. Keeping vhosts in their own files (rather than
+# editing ssl.conf) means: (1) ssl.conf stays close to the package default
+# so rpm upgrades don't conflict, (2) multiple FQDNs on one host each get
+# their own file, (3) easier to grep and audit.
+apache_vhost_file: "/etc/httpd/conf.d/{{ inventory_hostname }}-ssl.conf"
+
+# DocumentRoot for the vhost. /var/www/html is the RHEL stock location.
+apache_docroot: "/var/www/html"
+
+# Where Apache serves http-01 challenges from. Must be reachable at
+# http://<fqdn>/.well-known/acme-challenge/
+acme_http_challenge_docroot: "{{ apache_docroot }}"
+
+apache_service_name: "{{ 'apache2' if ansible_os_family | default('RedHat') == 'Debian' else 'httpd' }}"

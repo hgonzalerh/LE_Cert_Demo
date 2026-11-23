@@ -1,0 +1,35 @@
+---
+# Install cert_files (controller-side paths from acme_cert or
+# selfsigned_cert) onto the node. Idempotent: byte-identical files are not
+# touched and the handler doesn't fire.
+
+- name: "Install the private key"
+  ansible.builtin.copy:
+    src: "{{ cert_files.key }}"
+    dest: "{{ apache_key_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  notify: Reload Apache
+
+- name: "Install the full chain (cert + intermediates)"
+  ansible.builtin.copy:
+    src: "{{ cert_files.fullchain }}"
+    dest: "{{ apache_cert_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Reload Apache
+
+- name: "Install the intermediate chain on its own (for SSLCertificateChainFile if used)"
+  ansible.builtin.copy:
+    src: "{{ cert_files.chain }}"
+    dest: "{{ apache_chain_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Reload Apache
+  when: cert_files.chain is defined

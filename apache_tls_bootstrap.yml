@@ -1,252 +1,45 @@
 ---
 # apache_tls_bootstrap.yml
 #
-# Bootstrap a TLS endpoint in Apache on RHEL-family hosts:
-#   - Install mod_ssl if missing.
-#   - Generate a self-signed cert + key at the SAME paths the renewal
-#     playbook (tls_renew.yml) writes to, so a later ACME run is a
-#     drop-in replacement requiring no vhost edits.
-#   - Deploy a per-FQDN vhost file under /etc/httpd/conf.d/.
-#   - Neutralize the stock ssl.conf default vhost so it doesn't collide.
+# Bootstrap a TLS endpoint on each host:
+#   - Prepare the server software as a TLS endpoint (packages, vhost, firewall).
+#   - If there is no cert at all yet, install a short-lived self-signed one at
+#     the same paths tls_renew.yml writes to, so a later ACME run is a drop-in
+#     replacement.
 #
-# Idempotency: if a cert file already exists at the target path, it is
-# left alone. The renewal playbook is what handles "the cert is bad" —
-# this playbook only handles "there is no cert at all".
+# The server software is chosen with `cert_target` (default: apache), which
+# selects the role cert_target_<cert_target>.
+#
+# Idempotency: an existing cert is left alone. tls_renew.yml handles
+# "the cert is bad" — this playbook only handles "there is no cert at all".
 
-- name: "Bootstrap Apache TLS endpoint with self-signed cert"
+- name: "Bootstrap TLS endpoint with self-signed cert"
   hosts: webservers
   become: true
   gather_facts: true
 
   vars:
-    # MUST match the paths used by tls_renew.yml so renewals are drop-in.
-    apache_cert_dir: "/etc/pki/tls/certs"
-    apache_key_dir: "/etc/pki/tls/private"
-    apache_cert_file: "{{ apache_cert_dir }}/{{ inventory_hostname }}.fullchain.pem"
-    apache_key_file: "{{ apache_key_dir }}/{{ inventory_hostname }}.key"
-
-    # Per-FQDN vhost file. Keeping vhosts in their own files (rather than
-    # editing ssl.conf) means: (1) ssl.conf stays close to the package
-    # default so rpm upgrades don't conflict, (2) multiple FQDNs on one
-    # host each get their own file, (3) easier to grep and audit.
-    apache_vhost_file: "/etc/httpd/conf.d/{{ inventory_hostname }}-ssl.conf"
-
-    # DocumentRoot for the vhost. /var/www/html is the RHEL stock location
-    # and matches what tls_renew.yml assumes for ACME http-01 challenges.
-    apache_docroot: "/var/www/html"
-
-    # Self-signed cert validity. Short on purpose — these certs exist only
-    # to get Apache to start so ACME can take over. If 10 days lapses
-    # without a successful ACME renewal, that's a signal worth surfacing.
-    selfsigned_days: 10
+    cert_target_role: "cert_target_{{ cert_target | default('apache') }}"
 
   tasks:
+    - name: "Prepare the TLS endpoint"
+      ansible.builtin.include_role:
+        name: "{{ cert_target_role }}"
+        tasks_from: prepare
 
-    - name: "Install Apache and mod_ssl"
-      ansible.builtin.dnf:
-        name:
-          - httpd
-          - mod_ssl
-          # python3-cryptography is what community.crypto uses on the
-          # managed node when we run the cert modules there. We're
-          # actually running them on localhost via delegate_to, but
-          # installing it here is cheap and avoids surprises if someone
-          # later flips the delegation.
-        state: present
-
-    # -----------------------------------------------------------------
-    # Self-signed cert generation
-    #
-    # We generate on the control node and copy the result over, mirroring
-    # the renewal playbook's pattern. This keeps the "where do keys live"
-    # answer consistent: keys are born on the controller, distributed to
-    # nodes. The renewal playbook can then reuse the same domain key on
-    # subsequent runs if you want (here we generate fresh per host).
-    # -----------------------------------------------------------------
-
-    - name: "Check whether a cert already exists on the managed node"
-      ansible.builtin.stat:
-        path: "{{ apache_cert_file }}"
-      register: existing_cert
-
-    - name: "Check whether a key already exists on the managed node"
-      ansible.builtin.stat:
-        path: "{{ apache_key_file }}"
-      register: existing_key
-
-    - name: "Generate self-signed material (skipped if cert+key already present)"
-      when: not (existing_cert.stat.exists and existing_key.stat.exists)
+    - name: "Install a self-signed cert when none is present"
+      when: not cert_target_has_cert | bool
       block:
+        - name: "Generate self-signed cert on the controller"
+          ansible.builtin.include_role:
+            name: selfsigned_cert
 
-        - name: "Ensure local working directory exists on the controller"
-          ansible.builtin.file:
-            path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}"
-            state: directory
-            mode: "0700"
-          delegate_to: localhost
-          become: false
+        - name: "Install the self-signed cert"
+          ansible.builtin.include_role:
+            name: "{{ cert_target_role }}"
+            tasks_from: install
 
-        - name: "Generate private key on the controller"
-          community.crypto.openssl_privatekey:
-            path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/privkey.pem"
-            type: RSA
-            size: 2048
-            mode: "0600"
-          delegate_to: localhost
-          become: false
-
-        - name: "Generate CSR (self-signed, FQDN only — no SAN list needed)"
-          community.crypto.openssl_csr:
-            path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/cert.csr"
-            privatekey_path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/privkey.pem"
-            common_name: "{{ inventory_hostname }}"
-            # SAN matching the CN is conventional even for self-signed —
-            # modern clients prefer SAN over CN. Single entry, just the FQDN.
-            subject_alt_name:
-              - "DNS:{{ inventory_hostname }}"
-            mode: "0644"
-          delegate_to: localhost
-          become: false
-
-        - name: "Self-sign the certificate"
-          community.crypto.x509_certificate:
-            path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/cert.pem"
-            privatekey_path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/privkey.pem"
-            csr_path: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/cert.csr"
-            provider: selfsigned
-            selfsigned_not_after: "+{{ selfsigned_days }}d"
-            mode: "0644"
-          delegate_to: localhost
-          become: false
-
-        - name: "Install the private key onto the managed node"
-          ansible.builtin.copy:
-            src: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/privkey.pem"
-            dest: "{{ apache_key_file }}"
-            owner: root
-            group: root
-            mode: "0600"
-          notify: Reload Apache
-
-        - name: "Install the cert onto the managed node"
-          # Using the same filename suffix (`.fullchain.pem`) the renewal
-          # playbook uses, even though there's no chain to bundle here.
-          # Keeping the filename stable means the vhost config doesn't
-          # need to change when ACME later overwrites this file with a
-          # real fullchain.
-          ansible.builtin.copy:
-            src: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}/cert.pem"
-            dest: "{{ apache_cert_file }}"
-            owner: root
-            group: root
-            mode: "0644"
-          notify: Reload Apache
-
-    # -----------------------------------------------------------------
-    # Neutralize the stock /etc/httpd/conf.d/ssl.conf default vhost
-    #
-    # The mod_ssl RPM ships ssl.conf with a <VirtualHost _default_:443>
-    # block pointing at /etc/pki/tls/certs/localhost.crt. If we leave it
-    # in place alongside our per-FQDN vhost, Apache logs a warning about
-    # overlapping vhosts on :443 and the behavior depends on file load
-    # order. Cleaner to strip the vhost block and let ssl.conf be just
-    # the module-level SSL config (Listen 443, SSLPassPhraseDialog, etc).
-    # -----------------------------------------------------------------
-
-    - name: "Remove the default <VirtualHost _default_:443> block from ssl.conf"
-      ansible.builtin.replace:
-        path: /etc/httpd/conf.d/ssl.conf
-        # Match from the opening tag through the closing tag, multiline.
-        regexp: '(?ms)^<VirtualHost\s+_default_:443>.*?^</VirtualHost>\s*$'
-        replace: '# Default vhost removed by Ansible — see {{ apache_vhost_file | basename }}'
-      notify: Reload Apache
-
-    # -----------------------------------------------------------------
-    # Per-FQDN vhost
-    # -----------------------------------------------------------------
-
-    - name: "Deploy the per-FQDN TLS vhost"
-      ansible.builtin.copy:
-        dest: "{{ apache_vhost_file }}"
-        owner: root
-        group: root
-        mode: "0644"
-        # Modern, conservative TLS settings:
-        #   - TLS 1.2 + 1.3 only (RHEL crypto policy may further restrict)
-        #   - HSTS enabled (1 year, includeSubDomains)
-        #   - HTTP/2 enabled
-        # No SSLCertificateChainFile — deprecated since Apache 2.4.8;
-        # SSLCertificateFile with a fullchain PEM is the modern form.
-        content: |
-          # Managed by Ansible — do not edit by hand.
-          # Cert/key paths match tls_renew.yml so ACME renewals are drop-in.
-
-          <VirtualHost *:443>
-              ServerName {{ inventory_hostname }}
-              DocumentRoot {{ apache_docroot }}
-
-              ErrorLog logs/{{ inventory_hostname }}_ssl_error.log
-              CustomLog logs/{{ inventory_hostname }}_ssl_access.log combined
-
-              SSLEngine on
-              SSLCertificateFile    {{ apache_cert_file }}
-              SSLCertificateKeyFile {{ apache_key_file }}
-
-              SSLProtocol           all -SSLv3 -TLSv1 -TLSv1.1
-              SSLHonorCipherOrder   on
-
-              # HSTS. Only meaningful once a trusted cert is in place;
-              # harmless while still on the self-signed cert because
-              # clients won't reach this header until they trust the cert.
-              Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
-
-              <Directory "{{ apache_docroot }}">
-                  Options FollowSymLinks
-                  AllowOverride None
-                  Require all granted
-              </Directory>
-
-              # ACME http-01 challenges are served over :80; nothing to do here.
-          </VirtualHost>
-      notify: Reload Apache
-
-    # -----------------------------------------------------------------
-    # Firewall + SELinux + service
-    # -----------------------------------------------------------------
-
-    - name: "Open https in firewalld"
-      ansible.posix.firewalld:
-        service: https
-        permanent: true
-        immediate: true
-        state: enabled
-      # Some minimal images don't ship firewalld; tolerate that.
-      failed_when: false
-
-    - name: "Open http in firewalld (needed by ACME http-01)"
-      ansible.posix.firewalld:
-        service: http
-        permanent: true
-        immediate: true
-        state: enabled
-      failed_when: false
-
-    - name: "Ensure httpd is enabled and started"
-      ansible.builtin.service:
-        name: httpd
-        state: started
-        enabled: true
-
-    - name: "Run config syntax check before declaring success"
-      # `apachectl configtest` exits non-zero if anything is wrong.
-      # Catching it here surfaces problems immediately, rather than
-      # leaving httpd up on the old config after a failed reload.
-      ansible.builtin.command:
-        cmd: apachectl configtest
-      changed_when: false
-
-  handlers:
-    - name: Reload Apache
-      ansible.builtin.service:
-        name: httpd
-        state: reloaded
+    - name: "Verify the TLS endpoint"
+      ansible.builtin.include_role:
+        name: "{{ cert_target_role }}"
+        tasks_from: verify

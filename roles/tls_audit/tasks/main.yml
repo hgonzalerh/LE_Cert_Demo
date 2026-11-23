@@ -1,0 +1,139 @@
+---
+# tls_audit
+#
+# Check the live TLS endpoint of the current host from the control node.
+# Target-agnostic: it only talks to <inventory_hostname>:443, so it works
+# for any server software.
+#
+# Output fact:
+#   tls_compliant (bool) — false if the cert is missing, expiring within
+#   tls_min_days_remaining, doesn't match the FQDN, or its chain doesn't
+#   validate (unless tls_skip_chain_check).
+
+- name: "Fetch the live certificate presented on :443"
+  community.crypto.get_certificate:
+    host: "{{ inventory_hostname }}"
+    port: 443
+    # We don't validate the chain here; we just want the leaf so we can
+    # inspect its fields. Chain validation happens in a separate task.
+    asn1_base64: true
+  register: live_cert
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  # `failed_when: false` lets us treat "no cert at all" as a compliance
+  # failure rather than a play-stopping error.
+
+- name: "Parse the certificate for structured fields"
+  community.crypto.x509_certificate_info:
+    content: "{{ live_cert.cert }}"
+  register: cert_info
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  when: live_cert is success and live_cert.cert is defined
+
+- name: "Validate the certificate chain against the public trust store"
+  ansible.builtin.command:
+    # `openssl s_client` exits 0 only if the full chain validates against
+    # the system CA bundle. -verify_return_error makes verify failures
+    # actually fail the command instead of being only advisory.
+    cmd: >-
+      openssl s_client
+      -connect {{ inventory_hostname }}:443
+      -servername {{ inventory_hostname }}
+      -verify_return_error
+      -verify 5
+      -brief
+    stdin: ""
+  register: chain_check
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: not tls_skip_chain_check | bool
+
+# -----------------------------------------------------------------
+# Compliance verdict — broken out into independent facts.
+#
+# Each fact answers exactly ONE question. The final tls_compliant is
+# the AND of all of them. If you want to know why a host was marked
+# non-compliant, look at the individual facts in the debug output.
+#
+# Date math is done in epoch seconds: convert both not_after and
+# "now" to integer epoch, subtract, then divide by 86400 for days.
+# -----------------------------------------------------------------
+
+- name: "Fact: did we successfully fetch and parse a live certificate?"
+  ansible.builtin.set_fact:
+    cert_was_fetched: >-
+      {{
+        live_cert is success
+        and cert_info is success
+        and cert_info.not_after is defined
+      }}
+
+- name: "Fact: seconds remaining until cert expires (epoch math)"
+  # not_after from x509_certificate_info is ASN.1 TIME, e.g. "20260815142300Z".
+  ansible.builtin.set_fact:
+    cert_seconds_remaining: >-
+      {{
+        ((cert_info.not_after | to_datetime('%Y%m%d%H%M%SZ')).strftime('%s') | int)
+        - (now(utc=true).strftime('%s') | int)
+      }}
+  when: cert_was_fetched | bool
+
+- name: "Fact: days remaining (for human-readable debug output)"
+  ansible.builtin.set_fact:
+    cert_days_remaining: "{{ (cert_seconds_remaining | int) // 86400 }}"
+  when: cert_was_fetched | bool
+
+- name: "Fact: is the cert beyond the renewal threshold?"
+  ansible.builtin.set_fact:
+    is_within_validity_threshold: >-
+      {{
+        cert_was_fetched | bool
+        and (cert_seconds_remaining | int) >= (tls_min_days_remaining | int) * 86400
+      }}
+
+- name: "Fact: does the cert's CN or SAN match the inventory FQDN?"
+  ansible.builtin.set_fact:
+    corresponds_with_fqdn: >-
+      {{
+        cert_was_fetched | bool
+        and (
+          inventory_hostname in (cert_info.subject_alt_name | default([])
+            | map('regex_replace', '^DNS:', '') | list)
+          or inventory_hostname == (cert_info.subject.commonName | default(''))
+        )
+      }}
+
+- name: "Fact: does the chain validate against the public trust store?"
+  # When tls_skip_chain_check is true the openssl task was skipped, so
+  # chain_check has no rc — we treat the criterion as satisfied.
+  ansible.builtin.set_fact:
+    is_compliant_with_verification_chain: >-
+      {{
+        (tls_skip_chain_check | bool)
+        or (chain_check.rc is defined and chain_check.rc == 0)
+      }}
+
+- name: "Final verdict: AND of all criteria"
+  ansible.builtin.set_fact:
+    tls_compliant: >-
+      {{
+        cert_was_fetched | bool
+        and is_within_validity_threshold | bool
+        and corresponds_with_fqdn | bool
+        and is_compliant_with_verification_chain | bool
+      }}
+
+- name: "Report verdict and all criteria"
+  ansible.builtin.debug:
+    msg:
+      - "{{ inventory_hostname }}: {{ 'OK' if tls_compliant else 'NEEDS RENEWAL' }}"
+      - "  cert_was_fetched:                     {{ cert_was_fetched }}"
+      - "  cert_days_remaining:                  {{ cert_days_remaining | default('n/a') }}"
+      - "  is_within_validity_threshold:         {{ is_within_validity_threshold }}"
+      - "  corresponds_with_fqdn:                {{ corresponds_with_fqdn }}"
+      - "  is_compliant_with_verification_chain: {{ is_compliant_with_verification_chain }}"
