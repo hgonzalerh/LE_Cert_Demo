@@ -1,0 +1,21 @@
+---
+# ansible-navigator settings for this project.
+# Registry login (once per machine): podman login registry.redhat.io
+ansible-navigator:
+  mode: stdout
+
+  execution-environment:
+    enabled: true
+    container-engine: podman
+    image: registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9:latest
+    pull:
+      # Only pull when the image isn't present locally.
+      policy: missing
+    # ~/.ssh is mounted into the EE automatically by ansible-navigator.
+
+  playbook-artifact:
+    enable: true
+    save-as: "{playbook_dir}/.navigator/{playbook_name}-artifact-{time_stamp}.json"
+
+  logging:
+    file: ".navigator/ansible-navigator.log"

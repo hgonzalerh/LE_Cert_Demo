@@ -42,6 +42,21 @@ To add a target, create `roles/cert_target_<name>/` with these task files:
 
 `cert_target_apache` is the reference implementation.
 
+## Running with ansible-navigator
+
+`ansible-navigator.yml` runs everything in the AAP 2.7 supported EE
+(`registry.redhat.io/ansible-automation-platform-27/ee-supported-rhel9`),
+pulled only if missing. One-time setup:
+
+```sh
+podman login registry.redhat.io
+ansible-galaxy collection install -r collections/requirements.yml -p collections
+```
+
+The EE doesn't ship `community.crypto`; the second command installs it into
+`collections/` (gitignored), which is picked up automatically inside the EE.
+Run artifacts and logs go to `.navigator/` (gitignored).
+
 ## Test infrastructure on DigitalOcean
 
 `test_infra_create.yml` / `test_infra_delete.yml` build and tear down
@@ -54,8 +69,8 @@ One-time setup:
    for `test` → `ns1.digitalocean.com`, `ns2.digitalocean.com`, `ns3.digitalocean.com`.
 
 ```sh
-ansible-playbook test_infra_create.yml          # droplets + DNS + ./test_infra_hosts
-ansible-playbook -i test_infra_hosts apache_tls_bootstrap.yml
-ansible-playbook -i test_infra_hosts tls_renew.yml -e tls_skip_chain_check=true
-ansible-playbook test_infra_delete.yml          # only removes droplets tagged le-cert-demo
+ansible-navigator run test_infra_create.yml          # droplets + DNS + ./test_infra_hosts
+ansible-navigator run apache_tls_bootstrap.yml -i test_infra_hosts
+ansible-navigator run tls_renew.yml -i test_infra_hosts -e tls_skip_chain_check=true
+ansible-navigator run test_infra_delete.yml          # only removes droplets tagged le-cert-demo
 ```

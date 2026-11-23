@@ -1,3 +1,10 @@
+---
+# Installed into ./collections/ansible_collections (gitignored), which is
+# picked up automatically, including inside the execution environment.
+#   ansible-galaxy collection install -r collections/requirements.yml -p collections
 collections:
-  - community.crypto
-  - ansible.posix
+  # 2.24+ for acme_certificate `profile`; 3.x needs ansible-core >= 2.17
+  # and the AAP 2.7 supported EE ships 2.16.
+  - name: community.crypto
+    version: ">=2.24.0,<3.0.0"
+  - name: ansible.posix
