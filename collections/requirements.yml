@@ -3,8 +3,11 @@
 # picked up automatically, including inside the execution environment.
 #   ansible-galaxy collection install -r collections/requirements.yml -p collections
 collections:
-  # 2.24+ for acme_certificate `profile`; 3.x needs ansible-core >= 2.17
-  # and the AAP 2.7 supported EE ships 2.16.
+  # 3.x is required: Let's Encrypt now also offers the token-less
+  # dns-persist-01 challenge, which crashes community.crypto 2.x (final
+  # release 2.26.9) even when using http-01. 3.x declares ansible-core
+  # >= 2.17; the AAP 2.7 supported EE ships 2.16 and prints a "does not
+  # support Ansible version" warning, but the ACME flow works (tested).
   - name: community.crypto
-    version: ">=2.24.0,<3.0.0"
+    version: ">=3.6.0,<4.0.0"
   - name: ansible.posix

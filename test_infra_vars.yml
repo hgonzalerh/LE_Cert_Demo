@@ -19,7 +19,7 @@ do_test_hosts:
 # Only droplets carrying this tag are ever touched by the delete playbook.
 do_tag: "le-cert-demo"
 
-do_region: "nyc3"
+do_region: "sfo3"
 do_size: "s-1vcpu-1gb"
 do_image: "rockylinux-9-x64"
 
