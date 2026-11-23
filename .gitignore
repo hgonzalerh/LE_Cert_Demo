@@ -13,3 +13,5 @@ collections/ansible_collections/
 .navigator/
 # ACME account key vars file (-e @acme_account_key.yml) — never commit
 acme_account_key.yml
+# Red Hat account credentials for the rhc role — never commit
+rh_credentials.yml

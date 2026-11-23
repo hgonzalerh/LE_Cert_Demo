@@ -83,8 +83,20 @@ Run artifacts and logs go to `.navigator/` (gitignored).
 throwaway droplets to run the playbooks against. Settings live in
 `test_infra_vars.yml`.
 
+Droplets use the custom RHEL 9 image in nyc3 at the smallest size there,
+get a 2 GB swap file, and are registered with Red Hat by the
+`redhat.rhel_system_roles.rhc` role. `test_infra_delete.yml` unregisters them
+before deleting them.
+
 One-time setup:
 1. Put your DigitalOcean API token in `.do_api_token` (gitignored).
+1. Put your Red Hat account in `rh_credentials.yml` (gitignored):
+   ```yaml
+   rhc_auth:
+     login:
+       username: "you@example.com"
+       password: "..."
+   ```
 2. At your registrar, delegate the test zone to DigitalOcean: NS records
    for `test` → `ns1.digitalocean.com`, `ns2.digitalocean.com`, `ns3.digitalocean.com`.
 

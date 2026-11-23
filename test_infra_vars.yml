@@ -19,9 +19,16 @@ do_test_hosts:
 # Only droplets carrying this tag are ever touched by the delete playbook.
 do_tag: "le-cert-demo"
 
-do_region: "sfo3"
-do_size: "s-1vcpu-1gb"
-do_image: "rockylinux-9-x64"
+# The custom RHEL 9 image only exists in nyc3.
+do_region: "nyc3"
+# Smallest size offered in nyc3 (1 vCPU / 1 GB / 25 GB).
+do_size: "s-1vcpu-1gb-amd"
+# Custom image "rhel-9.3-x86_64-kvm.qcow2" (image ID in this DO account).
+do_image: 147008031
+
+# Red Hat account credentials for registering the droplets with the rhc
+# role (gitignored file defining rhc_auth).
+rh_credentials_file: "{{ playbook_dir }}/rh_credentials.yml"
 
 # SSH key already uploaded to DigitalOcean (fingerprint) and its local pair.
 do_ssh_key_fingerprint: "6e:72:40:b3:85:a9:19:22:94:a6:9a:9f:cd:63:58:ee"

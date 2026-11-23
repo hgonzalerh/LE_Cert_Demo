@@ -7,11 +7,14 @@
 #     tagged {{ do_tag }}, with {{ do_remote_user }} set up by cloud-init.
 #   - Point <name>.{{ do_dns_zone }} A records at the droplets.
 #   - Write an inventory to {{ do_inventory_file }} and wait for SSH.
+#   - Post-provisioning: add swap (small droplets OOM during dnf), then
+#     register each droplet with Red Hat (rhc role),
+#     using the gitignored rh_credentials.yml (defines rhc_auth).
 #
 # Then:
-#   ansible-playbook -i test_infra_hosts apache_installed.yml
-#   ansible-playbook -i test_infra_hosts apache_tls_bootstrap.yml
-#   ansible-playbook -i test_infra_hosts tls_renew.yml
+#   ansible-navigator run apache_installed.yml -i test_infra_hosts
+#   ansible-navigator run apache_tls_bootstrap.yml -i test_infra_hosts
+#   ansible-navigator run tls_renew.yml -i test_infra_hosts ...
 #
 # Tear down with test_infra_delete.yml.
 
@@ -215,3 +218,53 @@
       ansible.builtin.command:
         cmd: cloud-init status --wait
       changed_when: false
+
+
+- name: "Post-provisioning — register the droplets with Red Hat"
+  hosts: do_test
+  gather_facts: true
+  become: true
+  vars_files:
+    - test_infra_vars.yml
+  vars:
+    # The smallest droplets have ~750 MB usable RAM; dnf on full RHEL repos
+    # gets OOM-killed without swap.
+    do_swap_file: /swapfile
+    do_swap_size_mb: 2048
+  tasks:
+    - name: "Create and format the swap file"
+      ansible.builtin.shell:
+        cmd: >-
+          umask 077 &&
+          dd if=/dev/zero of={{ do_swap_file }} bs=1M count={{ do_swap_size_mb }} &&
+          mkswap {{ do_swap_file }}
+        creates: "{{ do_swap_file }}"
+
+    - name: "Persist the swap file in fstab"
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: "{{ do_swap_file }} none swap defaults 0 0"
+        regexp: '^{{ do_swap_file }}\s'
+
+    - name: "Check active swap"
+      ansible.builtin.command:
+        cmd: swapon --show=NAME --noheadings
+      register: do_swap_active
+      changed_when: false
+
+    - name: "Enable the swap file"
+      ansible.builtin.command:
+        cmd: "swapon {{ do_swap_file }}"
+      when: do_swap_file not in do_swap_active.stdout_lines
+      changed_when: true
+
+    - name: "Load the Red Hat account credentials"
+      ansible.builtin.include_vars:
+        file: "{{ rh_credentials_file }}"
+      no_log: true
+
+    - name: "Register with Red Hat Subscription Management / Insights"
+      ansible.builtin.include_role:
+        name: redhat.rhel_system_roles.rhc
+      vars:
+        rhc_state: present
