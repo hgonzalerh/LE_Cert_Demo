@@ -11,12 +11,28 @@ A demo for certificate maintenance using Let's Encrypt
 
 Every variable has a default in its role's `defaults/main.yml`; override with `-e`.
 
+`tls_renew.yml` additionally **requires** `acme_account_key`: the Let's Encrypt
+account private key as multiline PEM text, passed as an extra var. The easiest
+way is a vars file (keep it out of git, or encrypt it with ansible-vault):
+
+```yaml
+# acme_account_key.yml
+acme_account_key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+```
+
+```sh
+ansible-navigator run tls_renew.yml -e @acme_account_key.yml
+```
+
 ## Roles
 
 | Role | Scope | Output facts |
 |---|---|---|
 | `tls_audit` | Checks the live endpoint from the controller. | `tls_compliant` |
-| `acme_cert` | Let's Encrypt account, key, CSR, order (`main`) and retrieval (`finalize`), all on the controller. | `cert_challenge`, `cert_files` |
+| `acme_cert` | Let's Encrypt account (key from `acme_account_key`), domain key, CSR, order (`main`) and retrieval (`finalize`), all on the controller. | `cert_challenge`, `cert_files` |
 | `selfsigned_cert` | Self-signed key + cert on the controller. | `cert_files` |
 | `cert_target_apache` | Everything Apache-specific. | `cert_target_has_cert` |
 | `apache_site` | Plain HTTP demo site. | — |
@@ -71,6 +87,6 @@ One-time setup:
 ```sh
 ansible-navigator run test_infra_create.yml          # droplets + DNS + ./test_infra_hosts
 ansible-navigator run apache_tls_bootstrap.yml -i test_infra_hosts
-ansible-navigator run tls_renew.yml -i test_infra_hosts -e tls_skip_chain_check=true
+ansible-navigator run tls_renew.yml -i test_infra_hosts -e @acme_account_key.yml -e tls_skip_chain_check=true
 ansible-navigator run test_infra_delete.yml          # only removes droplets tagged le-cert-demo
 ```

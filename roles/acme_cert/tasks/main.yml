@@ -1,6 +1,8 @@
 ---
 # acme_cert — step 1: account, domain key, CSR and order.
 #
+# Input: acme_account_key (extra var) — ACME account private key, PEM text.
+#
 # Runs entirely on the control node; target-agnostic.
 #
 # Output fact:
@@ -20,14 +22,16 @@
   delegate_to: localhost
   become: false
 
-- name: "Generate an ACME account key (once, shared across hosts)"
-  community.crypto.openssl_privatekey:
-    path: "{{ acme_account_key }}"
-    type: RSA
-    size: 4096
-    mode: "0600"
-  delegate_to: localhost
-  become: false
+- name: "Check that the ACME account key was passed as PEM text"
+  ansible.builtin.assert:
+    that:
+      - acme_account_key is defined
+      - acme_account_key is string
+      - acme_account_key is search('-----BEGIN [A-Z ]*PRIVATE KEY-----')
+    fail_msg: >-
+      acme_account_key must be passed as an extra var containing the ACME
+      account private key as multiline PEM text (e.g. -e @acme_account_key.yml).
+    quiet: true
   run_once: true
 
 # Staging and production are separate account namespaces. Registering on
@@ -37,7 +41,7 @@
 # it, because modify_account=true 404s on a not-yet-existing account.
 - name: "Ensure the ACME account is registered on this directory"
   community.crypto.acme_account:
-    account_key_src: "{{ acme_account_key }}"
+    account_key_content: "{{ acme_account_key }}"
     acme_directory: "{{ acme_directory }}"
     acme_version: "{{ acme_version }}"
     terms_agreed: true
@@ -72,7 +76,7 @@
 # returns changed=false and challenge_data is empty.
 - name: "ACME — request a new order and get the http-01 challenge"
   community.crypto.acme_certificate:
-    account_key_src: "{{ acme_account_key }}"
+    account_key_content: "{{ acme_account_key }}"
     modify_account: false
     acme_directory: "{{ acme_directory }}"
     acme_version: "{{ acme_version }}"

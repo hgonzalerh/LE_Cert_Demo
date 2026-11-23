@@ -11,3 +11,5 @@ test_infra_hosts
 # Installed collections and ansible-navigator output
 collections/ansible_collections/
 .navigator/
+# ACME account key vars file (-e @acme_account_key.yml) — never commit
+acme_account_key.yml

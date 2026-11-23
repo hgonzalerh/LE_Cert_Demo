@@ -11,7 +11,7 @@
 # the cert.
 - name: "ACME — validate the challenge and retrieve the certificate"
   community.crypto.acme_certificate:
-    account_key_src: "{{ acme_account_key }}"
+    account_key_content: "{{ acme_account_key }}"
     modify_account: false
     acme_directory: "{{ acme_directory }}"
     acme_version: "{{ acme_version }}"

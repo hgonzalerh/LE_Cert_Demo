@@ -6,8 +6,11 @@ acme_email: "hugonz@gmail.com"
 # Let's Encrypt certificate profile ("classic", "tlsserver", "shortlived").
 acme_profile: shortlived
 
-# Paths on the control node where keys/CSRs/certs are kept per host.
-# Keeping these on the controller means re-runs reuse the same account
-# and domain keys, which is what ACME expects.
+# Path on the control node where per-host domain keys/CSRs/certs are kept.
 acme_local_dir: "{{ playbook_dir }}/acme/{{ inventory_hostname }}"
-acme_account_key: "{{ playbook_dir }}/acme/account.key"
+
+# acme_account_key — REQUIRED, no default. The ACME account private key as
+# multiline PEM text, passed as an extra var, e.g.:
+#   -e @acme_account_key.yml        (acme_account_key: |
+#                                      -----BEGIN PRIVATE KEY-----
+#                                      ...)
