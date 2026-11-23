@@ -41,3 +41,21 @@ To add a target, create `roles/cert_target_<name>/` with these task files:
 | `verify.yml` | Make sure the service is running with a valid config. |
 
 `cert_target_apache` is the reference implementation.
+
+## Test infrastructure on DigitalOcean
+
+`test_infra_create.yml` / `test_infra_delete.yml` build and tear down
+throwaway droplets to run the playbooks against. Settings live in
+`test_infra_vars.yml`.
+
+One-time setup:
+1. Put your DigitalOcean API token in `.do_api_token` (gitignored).
+2. At your registrar, delegate the test zone to DigitalOcean: NS records
+   for `test` → `ns1.digitalocean.com`, `ns2.digitalocean.com`, `ns3.digitalocean.com`.
+
+```sh
+ansible-playbook test_infra_create.yml          # droplets + DNS + ./test_infra_hosts
+ansible-playbook -i test_infra_hosts apache_tls_bootstrap.yml
+ansible-playbook -i test_infra_hosts tls_renew.yml -e tls_skip_chain_check=true
+ansible-playbook test_infra_delete.yml          # only removes droplets tagged le-cert-demo
+```

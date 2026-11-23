@@ -1,0 +1,217 @@
+---
+# test_infra_create.yml
+#
+# Create throwaway DigitalOcean droplets to test the TLS playbooks against:
+#   - Ensure the DNS zone {{ do_dns_zone }} exists in DigitalOcean.
+#   - Create one droplet per entry in do_test_hosts (skips existing ones),
+#     tagged {{ do_tag }}, with {{ do_remote_user }} set up by cloud-init.
+#   - Point <name>.{{ do_dns_zone }} A records at the droplets.
+#   - Write an inventory to {{ do_inventory_file }} and wait for SSH.
+#
+# Then:
+#   ansible-playbook -i test_infra_hosts apache_installed.yml
+#   ansible-playbook -i test_infra_hosts apache_tls_bootstrap.yml
+#   ansible-playbook -i test_infra_hosts tls_renew.yml
+#
+# Tear down with test_infra_delete.yml.
+
+- name: "Create DigitalOcean test infrastructure"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - test_infra_vars.yml
+  vars:
+    do_headers:
+      Authorization: "Bearer {{ do_api_token }}"
+      Content-Type: "application/json"
+    do_fqdns: "{{ do_test_hosts | map('regex_replace', '$', '.' ~ do_dns_zone) | list }}"
+
+  tasks:
+    # ---------------------------------------------------------------
+    # DNS zone
+    # ---------------------------------------------------------------
+    - name: "Look up the DNS zone"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/domains/{{ do_dns_zone }}"
+        headers: "{{ do_headers }}"
+        status_code: [200, 404]
+      register: do_zone
+
+    - name: "Create the DNS zone"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/domains"
+        method: POST
+        headers: "{{ do_headers }}"
+        body_format: json
+        body:
+          name: "{{ do_dns_zone }}"
+        status_code: 201
+      when: do_zone.status == 404
+      changed_when: true
+
+    # ---------------------------------------------------------------
+    # Droplets
+    # ---------------------------------------------------------------
+    - name: "List existing test droplets"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/droplets?tag_name={{ do_tag }}&per_page=200"
+        headers: "{{ do_headers }}"
+      register: do_existing
+
+    - name: "Create missing droplets"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/droplets"
+        method: POST
+        headers: "{{ do_headers }}"
+        body_format: json
+        body:
+          names: "{{ do_missing }}"
+          region: "{{ do_region }}"
+          size: "{{ do_size }}"
+          image: "{{ do_image }}"
+          ssh_keys:
+            - "{{ do_ssh_key_fingerprint }}"
+          tags:
+            - "{{ do_tag }}"
+          user_data: |
+            #cloud-config
+            users:
+              - default
+              - name: {{ do_remote_user }}
+                sudo: "ALL=(ALL) NOPASSWD:ALL"
+                shell: /bin/bash
+                ssh_authorized_keys:
+                  - {{ lookup('ansible.builtin.file', do_ssh_public_key_file | expanduser) }}
+        status_code: 202
+      vars:
+        do_missing: "{{ do_fqdns | difference(do_existing.json.droplets | map(attribute='name') | list) }}"
+      when: do_missing | length > 0
+      changed_when: true
+
+    - name: "Wait until every droplet is active with a public IPv4"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/droplets?tag_name={{ do_tag }}&per_page=200"
+        headers: "{{ do_headers }}"
+      register: do_droplets
+      until: >-
+        (do_droplets.json.droplets
+         | selectattr('name', 'in', do_fqdns)
+         | selectattr('status', 'equalto', 'active')
+         | list | length) == (do_fqdns | length)
+      retries: 40
+      delay: 10
+
+    - name: "Map FQDN -> public IPv4"
+      ansible.builtin.set_fact:
+        do_ips: >-
+          {{
+            do_ips | default({}) | combine({
+              item.name: (item.networks.v4 | selectattr('type', 'equalto', 'public') | first).ip_address
+            })
+          }}
+      loop: "{{ do_droplets.json.droplets | selectattr('name', 'in', do_fqdns) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ---------------------------------------------------------------
+    # A records
+    # ---------------------------------------------------------------
+    - name: "List existing A records in the zone"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/domains/{{ do_dns_zone }}/records?type=A&per_page=200"
+        headers: "{{ do_headers }}"
+      register: do_records
+
+    - name: "Create or update A records"
+      ansible.builtin.uri:
+        url: >-
+          {{ do_api }}/domains/{{ do_dns_zone }}/records{{
+            ('/' ~ do_current.id) if do_current else '' }}
+        method: "{{ 'PUT' if do_current else 'POST' }}"
+        headers: "{{ do_headers }}"
+        body_format: json
+        body:
+          type: A
+          name: "{{ item }}"
+          data: "{{ do_ips[item ~ '.' ~ do_dns_zone] }}"
+          ttl: "{{ do_dns_ttl }}"
+        status_code: [200, 201]
+      vars:
+        do_current: >-
+          {{ do_records.json.domain_records | selectattr('name', 'equalto', item) | first | default({}) }}
+      loop: "{{ do_test_hosts }}"
+      when: >-
+        not do_current
+        or do_current.data != do_ips[item ~ '.' ~ do_dns_zone]
+      changed_when: true
+
+    # ---------------------------------------------------------------
+    # Inventory + readiness
+    # ---------------------------------------------------------------
+    - name: "Write the test inventory"
+      ansible.builtin.copy:
+        dest: "{{ do_inventory_file }}"
+        mode: "0644"
+        content: |
+          # Generated by test_infra_create.yml — do not edit.
+          [webservers]
+          {% for fqdn in do_fqdns %}
+          {{ fqdn }} ansible_host={{ do_ips[fqdn] }}
+          {% endfor %}
+
+          [all:vars]
+          ansible_user={{ do_remote_user }}
+          ansible_ssh_private_key_file={{ do_ssh_private_key_file }}
+          ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={{ playbook_dir }}/.test_infra_known_hosts'
+
+    - name: "Add the droplets to this run's inventory"
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: do_test
+        ansible_host: "{{ do_ips[item] }}"
+        ansible_user: "{{ do_remote_user }}"
+        ansible_ssh_private_key_file: "{{ do_ssh_private_key_file }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile={{ playbook_dir }}/.test_infra_known_hosts
+      loop: "{{ do_fqdns }}"
+      changed_when: false
+
+    - name: "Check that the names resolve publicly (needs the NS delegation)"
+      ansible.builtin.command:
+        cmd: "getent ahostsv4 {{ item }}"
+      register: do_resolve
+      until: do_resolve.rc == 0 and do_ips[item] in do_resolve.stdout
+      retries: 18
+      delay: 10
+      changed_when: false
+      failed_when: not (do_resolve.rc == 0 and do_ips[item] in do_resolve.stdout)
+      ignore_errors: true
+      loop: "{{ do_fqdns }}"
+
+    - name: "Summary"
+      ansible.builtin.debug:
+        msg:
+          - "Inventory: {{ do_inventory_file }}"
+          - "{{ do_ips }}"
+          - >-
+            {{ 'DNS OK: all names resolve to their droplets.' if not do_unresolved
+               else 'WARNING: ' ~ (do_unresolved | join(', ')) ~ ' do not resolve yet. Check the NS delegation of '
+                    ~ do_dns_zone ~ ' to ns1/ns2/ns3.digitalocean.com before running tls_renew.yml.' }}
+      vars:
+        do_unresolved: "{{ do_resolve.results | selectattr('failed') | map(attribute='item') | list }}"
+
+
+- name: "Wait for the droplets to finish booting"
+  hosts: do_test
+  gather_facts: false
+  tasks:
+    - name: "Wait for SSH as {{ ansible_user }}"
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: "Wait for cloud-init to finish"
+      ansible.builtin.command:
+        cmd: cloud-init status --wait
+      changed_when: false
