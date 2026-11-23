@@ -5,10 +5,22 @@
 # Target-agnostic: it only talks to <inventory_hostname>:443, so it works
 # for any server software.
 #
+# Input: tls_min_days_remaining (required) — renewal threshold in days.
+#
 # Output fact:
 #   tls_compliant (bool) — false if the cert is missing, expiring within
 #   tls_min_days_remaining, doesn't match the FQDN, or its chain doesn't
 #   validate (unless tls_skip_chain_check).
+
+- name: "Check that the renewal threshold was passed"
+  ansible.builtin.assert:
+    that:
+      - tls_min_days_remaining is defined
+      - tls_min_days_remaining | string is match('^[0-9]+$')
+    fail_msg: >-
+      tls_min_days_remaining is required (no default): the number of days
+      before expiry at which to renew, e.g. -e tls_min_days_remaining=30.
+    quiet: true
 
 - name: "Fetch the live certificate presented on :443"
   community.crypto.get_certificate:

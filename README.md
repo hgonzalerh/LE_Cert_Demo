@@ -11,7 +11,11 @@ A demo for certificate maintenance using Let's Encrypt
 
 Every variable has a default in its role's `defaults/main.yml`; override with `-e`.
 
-`tls_renew.yml` additionally **requires** `acme_account_key`: the Let's Encrypt
+`tls_renew.yml` additionally **requires**:
+
+- `tls_min_days_remaining`: renew when the cert expires within this many days
+  (no default; e.g. `30` for 90-day certs, `2` for ~6-day `shortlived` certs).
+- `acme_account_key`: the Let's Encrypt
 account private key as multiline PEM text, passed as an extra var. The easiest
 way is a vars file (keep it out of git, or encrypt it with ansible-vault):
 
@@ -24,7 +28,7 @@ acme_account_key: |
 ```
 
 ```sh
-ansible-navigator run tls_renew.yml -e @acme_account_key.yml
+ansible-navigator run tls_renew.yml -e @acme_account_key.yml -e tls_min_days_remaining=30
 ```
 
 ## Roles
@@ -87,6 +91,6 @@ One-time setup:
 ```sh
 ansible-navigator run test_infra_create.yml          # droplets + DNS + ./test_infra_hosts
 ansible-navigator run apache_tls_bootstrap.yml -i test_infra_hosts
-ansible-navigator run tls_renew.yml -i test_infra_hosts -e @acme_account_key.yml -e tls_skip_chain_check=true
+ansible-navigator run tls_renew.yml -i test_infra_hosts -e @acme_account_key.yml -e tls_min_days_remaining=2 -e tls_skip_chain_check=true
 ansible-navigator run test_infra_delete.yml          # only removes droplets tagged le-cert-demo
 ```

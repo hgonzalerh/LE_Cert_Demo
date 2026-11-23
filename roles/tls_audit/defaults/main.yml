@@ -1,6 +1,9 @@
 ---
-# Renew if the cert expires within this many days.
-tls_min_days_remaining: 30
+# tls_min_days_remaining — REQUIRED, no default. Renew if the cert expires
+# within this many days. Pick it to match the certificate lifetime, e.g. 30
+# for 90-day ("classic") certs, 2 for ~6-day ("shortlived") certs:
+#   -e tls_min_days_remaining=30
+# tls_min_days_remaining: 30
 
 # Setting this to true allows for provisioning of staging certs and
 # internal certs when Ansible localhost does not have the private CA.
