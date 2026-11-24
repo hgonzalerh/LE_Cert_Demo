@@ -1,0 +1,17 @@
+---
+# cert_target_apache
+#
+# Apache implementation of the cert target interface. Entry points
+# (call with include_role + tasks_from):
+#
+#   prepare            install Apache + mod_ssl, TLS vhost, firewall.
+#                      Sets fact cert_target_has_cert (bool).
+#   publish_challenge  serve cert_challenge (http-01) from the web root.
+#   cleanup_challenge  remove it again.
+#   install            install cert_files onto the node, notify reload.
+#   verify             ensure the service runs and the config is valid.
+#
+# The default entry point (this file) is `prepare`.
+
+- name: "Prepare Apache as a TLS endpoint"
+  ansible.builtin.include_tasks: prepare.yml

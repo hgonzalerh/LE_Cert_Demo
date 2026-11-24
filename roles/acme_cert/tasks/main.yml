@@ -1,0 +1,102 @@
+---
+# acme_cert — step 1: account, domain key, CSR and order.
+#
+# Input: acme_account_key (extra var) — ACME account private key, PEM text.
+#
+# Runs entirely on the control node; target-agnostic.
+#
+# Output fact:
+#   cert_challenge (dict) — the http-01 challenge to publish, with keys
+#     `resource` (path under the web root) and `resource_value` (file body).
+#     Empty dict when LE reused a cached authorization and there is
+#     nothing to publish.
+#
+# After the challenge has been published, call this role again with
+# `tasks_from: finalize` to retrieve the certificate.
+
+- name: "Ensure local ACME working directory exists"
+  ansible.builtin.file:
+    path: "{{ acme_local_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: "Check that the ACME account key was passed as PEM text"
+  ansible.builtin.assert:
+    that:
+      - acme_account_key is defined
+      - acme_account_key is string
+      - acme_account_key is search('-----BEGIN [A-Z ]*PRIVATE KEY-----')
+    fail_msg: >-
+      acme_account_key must be passed as an extra var containing the ACME
+      account private key as multiline PEM text (e.g. -e @acme_account_key.yml).
+    quiet: true
+  run_once: true
+
+# Staging and production are separate account namespaces. Registering on
+# staging does NOT register on production, even with the same key. This is
+# idempotent: first run creates the account, later runs are no-ops.
+# We use acme_account explicitly rather than letting acme_certificate do
+# it, because modify_account=true 404s on a not-yet-existing account.
+- name: "Ensure the ACME account is registered on this directory"
+  community.crypto.acme_account:
+    account_key_content: "{{ acme_account_key }}"
+    acme_directory: "{{ acme_directory }}"
+    acme_version: "{{ acme_version }}"
+    terms_agreed: true
+    state: present
+    contact:
+      - "mailto:{{ acme_email }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: "Generate a per-host domain private key"
+  community.crypto.openssl_privatekey:
+    path: "{{ acme_local_dir }}/privkey.pem"
+    type: RSA
+    size: 2048
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+
+- name: "Generate a CSR for this FQDN"
+  community.crypto.openssl_csr:
+    path: "{{ acme_local_dir }}/cert.csr"
+    privatekey_path: "{{ acme_local_dir }}/privkey.pem"
+    common_name: "{{ inventory_hostname }}"
+    subject_alt_name:
+      - "DNS:{{ inventory_hostname }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+# If LE already has a valid authorization cached for this FQDN, this call
+# returns changed=false and challenge_data is empty.
+- name: "ACME — request a new order and get the http-01 challenge"
+  community.crypto.acme_certificate:
+    account_key_content: "{{ acme_account_key }}"
+    modify_account: false
+    acme_directory: "{{ acme_directory }}"
+    acme_version: "{{ acme_version }}"
+    terms_agreed: true
+    challenge: http-01
+    profile: "{{ acme_profile }}"
+    csr: "{{ acme_local_dir }}/cert.csr"
+    dest: "{{ acme_local_dir }}/cert.pem"
+    fullchain_dest: "{{ acme_local_dir }}/fullchain.pem"
+    chain_dest: "{{ acme_local_dir }}/chain.pem"
+  register: acme_order
+  delegate_to: localhost
+  become: false
+
+- name: "Expose the http-01 challenge for the target role to publish"
+  ansible.builtin.set_fact:
+    cert_challenge: >-
+      {{
+        acme_order.challenge_data[inventory_hostname]['http-01']
+        if (acme_order is changed
+            and inventory_hostname in (acme_order.challenge_data | default({})))
+        else {}
+      }}

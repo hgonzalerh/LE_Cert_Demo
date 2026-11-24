@@ -1,0 +1,133 @@
+---
+# test_infra_delete.yml
+#
+# Tear down what test_infra_create.yml built:
+#   - Unregister the droplets from Red Hat (rhc role, rhc_state: absent) so
+#     they don't linger in the Red Hat account. Best effort: unreachable or
+#     unregistered droplets don't stop the teardown.
+#   - Delete droplets tagged {{ do_tag }} (and ONLY those) whose name is one of
+#     the test FQDNs.
+#   - Delete the matching A records in {{ do_dns_zone }}.
+#   - Remove the generated inventory and known_hosts file.
+#
+# The DNS zone itself is kept so the NS delegation stays valid; pass
+# -e do_delete_zone=true to remove it too.
+
+- name: "Find the test droplets"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - test_infra_vars.yml
+  vars:
+    do_headers:
+      Authorization: "Bearer {{ do_api_token }}"
+      Content-Type: "application/json"
+    do_fqdns: "{{ do_test_hosts | map('regex_replace', '$', '.' ~ do_dns_zone) | list }}"
+
+  tasks:
+    - name: "List test droplets"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/droplets?tag_name={{ do_tag }}&per_page=200"
+        headers: "{{ do_headers }}"
+      register: do_existing
+
+    - name: "Select the droplets to delete"
+      ansible.builtin.set_fact:
+        do_doomed: "{{ do_existing.json.droplets | selectattr('name', 'in', do_fqdns) | list }}"
+
+    - name: "Add them to this run's inventory for unregistering"
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: do_test
+        ansible_host: "{{ (item.networks.v4 | selectattr('type', 'equalto', 'public') | first).ip_address }}"
+        ansible_user: "{{ do_remote_user }}"
+        ansible_ssh_private_key_file: "{{ do_ssh_private_key_file }}"
+        ansible_ssh_common_args: >-
+          -o StrictHostKeyChecking=accept-new
+          -o UserKnownHostsFile={{ playbook_dir }}/.test_infra_known_hosts
+      loop: "{{ do_doomed }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+
+
+- name: "Unregister the droplets from Red Hat"
+  hosts: do_test
+  gather_facts: true
+  become: true
+  ignore_unreachable: true
+  tasks:
+    - name: "Unregister (best effort)"
+      block:
+        - name: "Remove Red Hat registration"
+          ansible.builtin.include_role:
+            name: redhat.rhel_system_roles.rhc
+          vars:
+            rhc_state: absent
+      rescue:
+        - name: "Report unregister failure and continue"
+          ansible.builtin.debug:
+            msg: "Could not unregister {{ inventory_hostname }}; remove it manually at console.redhat.com if needed."
+
+
+- name: "Delete DigitalOcean test infrastructure"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - test_infra_vars.yml
+  vars:
+    do_delete_zone: false
+    do_headers:
+      Authorization: "Bearer {{ do_api_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+    - name: "Delete test droplets"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/droplets/{{ item.id }}"
+        method: DELETE
+        headers: "{{ do_headers }}"
+        status_code: [204, 404]
+      loop: "{{ do_doomed }}"
+      loop_control:
+        label: "{{ item.name }} ({{ item.id }})"
+      changed_when: true
+
+    - name: "Look up the DNS zone"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/domains/{{ do_dns_zone }}/records?type=A&per_page=200"
+        headers: "{{ do_headers }}"
+        status_code: [200, 404]
+      register: do_records
+
+    - name: "Delete the test A records"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/domains/{{ do_dns_zone }}/records/{{ item.id }}"
+        method: DELETE
+        headers: "{{ do_headers }}"
+        status_code: [204, 404]
+      loop: >-
+        {{ (do_records.json.domain_records | default([]))
+           | selectattr('name', 'in', do_test_hosts) | list }}
+      loop_control:
+        label: "{{ item.name }}.{{ do_dns_zone }} -> {{ item.data }}"
+      changed_when: true
+
+    - name: "Delete the DNS zone"
+      ansible.builtin.uri:
+        url: "{{ do_api }}/domains/{{ do_dns_zone }}"
+        method: DELETE
+        headers: "{{ do_headers }}"
+        status_code: [204, 404]
+      when: do_delete_zone | bool
+      changed_when: true
+
+    - name: "Remove generated local files"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ do_inventory_file }}"
+        - "{{ playbook_dir }}/.test_infra_known_hosts"

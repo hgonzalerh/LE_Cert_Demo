@@ -1,0 +1,38 @@
+---
+# Lint all Ansible content on every pull request (and on pushes to main).
+# The "ansible-lint" job is a required status check for merging into main.
+#
+# Uses the public community-ansible-dev-tools image, the upstream of
+# Red Hat's registry.redhat.io/ansible-automation-platform-27/
+# ansible-dev-tools-rhel9 (which needs registry credentials).
+# Project settings come from .ansible-lint; collections are installed by
+# ansible-lint from collections/requirements.yml.
+name: ansible-lint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ansible-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ansible-lint:
+    name: ansible-lint
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ansible/community-ansible-dev-tools:latest
+      # The image's default user can't write to the runner's workspace.
+      options: --user root
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Run ansible-lint
+        run: ansible-lint --nocolor

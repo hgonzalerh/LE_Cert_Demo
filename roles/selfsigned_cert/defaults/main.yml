@@ -1,0 +1,8 @@
+---
+# Self-signed cert validity. Short on purpose — these certs exist only
+# to get the server to start so ACME can take over. If this lapses
+# without a successful ACME renewal, that's a signal worth surfacing.
+selfsigned_days: 10
+
+# Controller-side working directory for the generated material.
+selfsigned_local_dir: "{{ playbook_dir }}/selfsigned/{{ inventory_hostname }}"

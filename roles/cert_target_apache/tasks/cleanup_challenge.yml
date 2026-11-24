@@ -1,0 +1,7 @@
+---
+- name: "Clean up the challenge file"
+  ansible.builtin.file:
+    path: "{{ acme_http_challenge_docroot }}/{{ cert_challenge.resource }}"
+    state: absent
+  become: true
+  when: cert_challenge | default({}) | length > 0

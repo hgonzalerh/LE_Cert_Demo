@@ -1,0 +1,57 @@
+---
+# selfsigned_cert
+#
+# Generate a self-signed key + cert for the current host's FQDN on the
+# control node. Target-agnostic: installing it is the target role's job.
+#
+# Output fact:
+#   cert_files (dict) — controller-side paths: key, cert, fullchain.
+#   (no chain: there is nothing to bundle for a self-signed cert)
+
+- name: "Ensure local working directory exists on the controller"
+  ansible.builtin.file:
+    path: "{{ selfsigned_local_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: "Generate private key on the controller"
+  community.crypto.openssl_privatekey:
+    path: "{{ selfsigned_local_dir }}/privkey.pem"
+    type: RSA
+    size: 2048
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+
+- name: "Generate CSR (FQDN only)"
+  community.crypto.openssl_csr:
+    path: "{{ selfsigned_local_dir }}/cert.csr"
+    privatekey_path: "{{ selfsigned_local_dir }}/privkey.pem"
+    common_name: "{{ inventory_hostname }}"
+    # SAN matching the CN is conventional even for self-signed —
+    # modern clients prefer SAN over CN.
+    subject_alt_name:
+      - "DNS:{{ inventory_hostname }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: "Self-sign the certificate"
+  community.crypto.x509_certificate:
+    path: "{{ selfsigned_local_dir }}/cert.pem"
+    privatekey_path: "{{ selfsigned_local_dir }}/privkey.pem"
+    csr_path: "{{ selfsigned_local_dir }}/cert.csr"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ selfsigned_days }}d"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: "Expose the generated material for the target role to install"
+  ansible.builtin.set_fact:
+    cert_files:
+      key: "{{ selfsigned_local_dir }}/privkey.pem"
+      cert: "{{ selfsigned_local_dir }}/cert.pem"
+      fullchain: "{{ selfsigned_local_dir }}/cert.pem"

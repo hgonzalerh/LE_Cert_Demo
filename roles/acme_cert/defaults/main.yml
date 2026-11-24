@@ -1,0 +1,16 @@
+---
+acme_directory: "https://acme-staging-v02.api.letsencrypt.org/directory"
+# acme_directory: "https://acme-v02.api.letsencrypt.org/directory"
+acme_version: 2
+acme_email: "hugonz@gmail.com"
+# Let's Encrypt certificate profile ("classic", "tlsserver", "shortlived").
+acme_profile: shortlived
+
+# Path on the control node where per-host domain keys/CSRs/certs are kept.
+acme_local_dir: "{{ playbook_dir }}/acme/{{ inventory_hostname }}"
+
+# acme_account_key — REQUIRED, no default. The ACME account private key as
+# multiline PEM text, passed as an extra var, e.g.:
+#   -e @acme_account_key.yml        (acme_account_key: |
+#                                      -----BEGIN PRIVATE KEY-----
+#                                      ...)

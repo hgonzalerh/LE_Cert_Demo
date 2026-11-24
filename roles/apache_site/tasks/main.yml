@@ -1,0 +1,24 @@
+---
+# apache_site — plain HTTP demo site.
+
+- name: "Latest Apache version installed"
+  ansible.builtin.dnf:
+    name: httpd
+    state: present
+  become: true
+
+- name: "Apache enabled and running"
+  ansible.builtin.service:
+    name: httpd
+    enabled: true
+    state: started
+  become: true
+
+- name: "Copy web.html"
+  ansible.builtin.template:
+    src: web.html.j2
+    dest: /var/www/html/index.html
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
