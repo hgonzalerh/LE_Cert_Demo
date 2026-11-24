@@ -62,6 +62,13 @@ To add a target, create `roles/cert_target_<name>/` with these task files:
 
 `cert_target_apache` is the reference implementation.
 
+## CI
+
+`.github/workflows/ansible-lint.yml` runs `ansible-lint` on every pull request
+(and on pushes to `main`) using the public
+`ghcr.io/ansible/community-ansible-dev-tools` image. The `ansible-lint` check
+must pass before a pull request can be merged into `main`.
+
 ## Running with ansible-navigator
 
 `ansible-navigator.yml` runs everything in the AAP 2.7 supported EE
